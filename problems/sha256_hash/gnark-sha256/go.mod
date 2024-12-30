@@ -1,4 +1,4 @@
-module polygnark
+module gnark-sha256
 
 go 1.23.4
 
