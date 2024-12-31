@@ -3,20 +3,21 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
-	"fmt"
 	"encoding/binary"
 	"flag"
+	"fmt"
 	"hash"
 	"io"
 	"os"
 
 	ipc "github.com/PolyhedraZK/proof-arena/SPJ/IPCUtils"
 	"github.com/consensys/gnark-crypto/ecc"
-	"github.com/consensys/gnark/backend/groth16"
+	"github.com/consensys/gnark-crypto/kzg"
+	"github.com/consensys/gnark/backend/plonk"
 	"github.com/consensys/gnark/backend/witness"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/frontend/cs/r1cs"
+	"github.com/consensys/gnark/frontend/cs/scs"
 	zkhash "github.com/consensys/gnark/std/hash"
 	gnarksha2 "github.com/consensys/gnark/std/hash/sha2"
 	"github.com/consensys/gnark/std/math/uints"
@@ -77,7 +78,7 @@ func Hash(in []uints.U8, expected []uints.U8, c *sha256Circuit, api frontend.API
 	return nil
 }
 
-func writeCircuitToFile(filename string, r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey) error {
+func writeCircuitToFile(filename string, r1cs constraint.ConstraintSystem, pk plonk.ProvingKey, vk plonk.VerifyingKey) error {
 	circuitFile, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -107,18 +108,20 @@ func writeCircuitToFile(filename string, r1cs constraint.ConstraintSystem, pk gr
 	return nil
 }
 
-func proverSetup() (cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, err error) {
+func proverSetup() (cs constraint.ConstraintSystem, pk plonk.ProvingKey, vk plonk.VerifyingKey, err error) {
 	var c sha256Circuit
 	c.In = make([]uints.U8, N*InputSize)
 	c.Expected = make([]uints.U8, N*OutputSize)
 	c.hasher = HasherName
 
-	r1cs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &c)
+	r1cs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &c)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	pk, vk, err = groth16.Setup(r1cs)
+	srs := kzg.NewSRS(ecc.BN254)
+
+	pk, vk, err = plonk.Setup(r1cs, srs, srs)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -146,7 +149,7 @@ func prove(inputPipe *os.File, outputPipe *os.File) error {
 	}
 	ipc.Write_string(outputPipe, "witness generated")
 
-	proof, err := groth16.Prove(cs, pk, witness)
+	proof, err := plonk.Prove(cs, pk, witness)
 	if err != nil {
 		return err
 	}
@@ -172,7 +175,7 @@ func generateWitness(in, expectedBytes []byte) (witness.Witness, error) {
 	return frontend.NewWitness(&c, ecc.BN254.ScalarField())
 }
 
-func sendProofData(proof groth16.Proof, vk groth16.VerifyingKey, witness witness.Witness, outputPipe *os.File) error {
+func sendProofData(proof plonk.Proof, vk plonk.VerifyingKey, witness witness.Witness, outputPipe *os.File) error {
 	writeBuffer := func(data interface {
 		WriteTo(w io.Writer) (int64, error)
 	}) error {
@@ -211,8 +214,8 @@ func verify(inputPipe *os.File, outputPipe *os.File) error {
 		return err
 	}
 
-	vk := groth16.NewVerifyingKey(ecc.BN254)
-	proof := groth16.NewProof(ecc.BN254)
+	vk := plonk.NewVerifyingKey(ecc.BN254)
+	proof := plonk.NewProof(ecc.BN254)
 	publicWitness, err := frontend.NewWitness(nil, ecc.BN254.ScalarField(), frontend.PublicOnly())
 	if err != nil {
 		return err
@@ -227,9 +230,10 @@ func verify(inputPipe *os.File, outputPipe *os.File) error {
 	if _, err := publicWitness.ReadFrom(bytes.NewReader(publicWitnessBytes)); err != nil {
 		return err
 	}
+
 	numRepeats := 100
 	for i := 0; i < numRepeats; i++ {
-		err = groth16.Verify(proof, vk, publicWitness)
+		err = plonk.Verify(proof, vk, publicWitness)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -274,7 +278,7 @@ func main() {
 	case "prove":
 
 		ipc.Write_string(ProverToSPJPipe, "GNARK SHA-256")
-		ipc.Write_string(ProverToSPJPipe, "Groth16")
+		ipc.Write_string(ProverToSPJPipe, "PLONK")
 		ipc.Write_string(ProverToSPJPipe, "GNARK")
 		err = prove(spjToProverPipe, ProverToSPJPipe)
 		if err != nil {
