@@ -109,24 +109,26 @@ func writeCircuitToFile(filename string, r1cs constraint.ConstraintSystem, pk pl
 }
 
 func proverSetup() (cs constraint.ConstraintSystem, pk plonk.ProvingKey, vk plonk.VerifyingKey, err error) {
-	var c sha256Circuit
-	c.In = make([]uints.U8, N*InputSize)
-	c.Expected = make([]uints.U8, N*OutputSize)
-	c.hasher = HasherName
+    // Initialize the circuit
+    var c sha256Circuit
+    c.In = make([]uints.U8, N*InputSize)
+    c.Expected = make([]uints.U8, N*OutputSize)
+    c.hasher = HasherName
+    r1cs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &c)
+    if err != nil {
+        return nil, nil, nil, err
+    }
+    sizeCanonical, _ := plonk.SRSSize(r1cs)
+    srs := kzg.NewSRS(ecc.BN254)
+    if srs == nil || sizeCanonical <= 0 {
+        return nil, nil, nil, fmt.Errorf("invalid SRS size: required %d", sizeCanonical)
+    }
+    pk, vk, err = plonk.Setup(r1cs, srs, srs)
+    if err != nil {
+        return nil, nil, nil, fmt.Errorf("failed to setup plonk: %w", err)
+    }
 
-	r1cs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &c)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	srs := kzg.NewSRS(ecc.BN254)
-
-	pk, vk, err = plonk.Setup(r1cs, srs, srs)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	return r1cs, pk, vk, nil
+    return r1cs, pk, vk, nil
 }
 
 func prove(inputPipe *os.File, outputPipe *os.File) error {
